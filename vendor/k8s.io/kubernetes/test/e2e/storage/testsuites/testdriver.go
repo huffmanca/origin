@@ -229,6 +229,10 @@ type PerTestConfig struct {
 
 	// Some drivers run in their own namespace
 	DriverNamespace *v1.Namespace
+
+	// Some drivers require additional information to cleanup their created
+	// resources
+	CleanupString string
 }
 
 // GetUniqueDriverName returns unique driver name that can be used parallelly in tests

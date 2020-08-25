@@ -20,10 +20,13 @@ import (
 	"context"
 	"flag"
 	"io/ioutil"
+	"math/rand"
+	"strconv"
 
 	"github.com/pkg/errors"
 
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -299,7 +302,12 @@ func (d *driverDefinition) GetDynamicProvisionStorageClass(e2econfig *testsuites
 		// reconsidered if we eventually need to move in-tree storage tests out.
 		sc.Parameters["csi.storage.k8s.io/fstype"] = fsType
 	}
-	return testsuites.GetStorageClass(sc.Provisioner, sc.Parameters, sc.VolumeBindingMode, f.Namespace.Name, "e2e-sc")
+	testSuiteSC := testsuites.GetStorageClass(sc.Provisioner, sc.Parameters, sc.VolumeBindingMode, f.Namespace.Name, "e2e-sc")
+	if testSuiteSC.Labels == nil {
+		testSuiteSC.Labels = make(map[string]string)
+	}
+	testSuiteSC.Labels[e2econfig.CleanupString] = e2econfig.CleanupString
+	return testSuiteSC
 }
 
 func loadSnapshotClass(filename string) (*unstructured.Unstructured, error) {
@@ -374,11 +382,35 @@ func (d *driverDefinition) GetCSIDriverName(e2econfig *testsuites.PerTestConfig)
 }
 
 func (d *driverDefinition) PrepareTest(f *framework.Framework) (*testsuites.PerTestConfig, func()) {
+	cleanupString := "e2e-external-" + strconv.Itoa(rand.Int())
 	e2econfig := &testsuites.PerTestConfig{
 		Driver:              d,
 		Prefix:              "external",
 		Framework:           f,
 		ClientNodeSelection: e2epod.NodeSelection{Name: d.ClientNodeName},
+		CleanupString:       cleanupString,
 	}
-	return e2econfig, func() {}
+	return e2econfig, d.Cleanup(f, cleanupString)
+}
+
+func (d *driverDefinition) Cleanup(f *framework.Framework, cleanupString string) func() {
+	return func() {
+		framework.Logf("Cleanup: Attempting to delete storageClasses")
+		scList, err := f.ClientSet.StorageV1().StorageClasses().List(context.TODO(), metav1.ListOptions{
+			LabelSelector: cleanupString,
+		})
+		framework.Logf("Cleanup: SCList: %v", scList)
+		if err != nil && !apierrors.IsNotFound(err) {
+			framework.Logf("error querying list of storage classes: %v", err)
+		}
+		if scList.Items != nil {
+			for _, sc := range scList.Items {
+				framework.Logf("Attempting to delete storage class %s with label %s", sc.Name, cleanupString)
+				err := f.ClientSet.StorageV1().StorageClasses().Delete(context.TODO(), sc.Name, metav1.DeleteOptions{})
+				if err != nil && !apierrors.IsNotFound(err) {
+					framework.Logf("error deleting storage class %s: %v", sc.Name, err)
+				}
+			}
+		}
+	}
 }
